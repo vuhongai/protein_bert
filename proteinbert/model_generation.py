@@ -3,7 +3,9 @@ import pickle
 
 import numpy as np
 
-from tensorflow import keras
+import tensorflow as tf
+import tensorflow.keras as keras
+from tensorflow.keras import backend as K
 
 from .shared_utils.util import log
 from .tokenization import additional_token_to_index, n_tokens, tokenize_seq
@@ -140,7 +142,82 @@ class FinetuningModelGenerator(ModelGenerator):
         self._init_weights(model)
                 
         return model
-                        
+
+
+class FinetuningModelGenerator_faav(ModelGenerator):
+
+    def __init__(self, pretraining_model_generator, output_spec, pretraining_model_manipulation_function = None, dropout_rate = 0.5, optimizer_class = None, \
+            lr = None, other_optimizer_kwargs = None, model_weights = None, optimizer_weights = None, f_aav=True):
+        
+        if other_optimizer_kwargs is None:
+            if optimizer_class is None:
+                other_optimizer_kwargs = pretraining_model_generator.other_optimizer_kwargs
+            else:
+                other_optimizer_kwargs = {}
+        
+        if optimizer_class is None:
+            optimizer_class = pretraining_model_generator.optimizer_class
+            
+        if lr is None:
+            lr = pretraining_model_generator.lr
+            
+        ModelGenerator.__init__(self, optimizer_class = optimizer_class, lr = lr, other_optimizer_kwargs = other_optimizer_kwargs, model_weights = model_weights, \
+                optimizer_weights = optimizer_weights)
+        
+        self.pretraining_model_generator = pretraining_model_generator
+        self.output_spec = output_spec
+        self.pretraining_model_manipulation_function = pretraining_model_manipulation_function
+        self.dropout_rate = dropout_rate
+        self.f_aav = f_aav
+                    
+    def create_model(self, seq_len, freeze_pretrained_layers = False):
+        
+        model = self.pretraining_model_generator.create_model(seq_len, compile = False, init_weights = (self.model_weights is None))
+            
+        if self.pretraining_model_manipulation_function is not None:
+            model = self.pretraining_model_manipulation_function(model)
+            
+        if freeze_pretrained_layers:
+            for layer in model.layers:
+                layer.trainable = False
+        
+        model_inputs = model.input
+        pretraining_output_seq_layer, pretraining_output_annoatations_layer = model.output
+        last_hidden_layer = pretraining_output_seq_layer if self.output_spec.output_type.is_seq else pretraining_output_annoatations_layer
+        last_hidden_layer = keras.layers.Dropout(self.dropout_rate)(last_hidden_layer)
+
+        if self.f_aav:
+          ###### concat f_aav to the last hidden layer
+          input_faav = tf.keras.Input(shape=(1))
+          last_hidden_layer = tf.keras.layers.Concatenate(axis=-1)([last_hidden_layer, input_faav])
+        else:
+          last_hidden_layer = last_hidden_layer
+
+        if self.output_spec.output_type.is_categorical:
+            output_layer = keras.layers.Dense(len(self.output_spec.unique_labels), activation = 'softmax')(last_hidden_layer)
+            loss = 'sparse_categorical_crossentropy'
+        elif self.output_spec.output_type.is_binary:
+            output_layer = keras.layers.Dense(1, activation = 'sigmoid')(last_hidden_layer)
+            loss = 'binary_crossentropy'
+        elif self.output_spec.output_type.is_numeric:
+            output_layer = keras.layers.Dense(1, activation = None)(last_hidden_layer)
+            loss = 'mse'
+        else:
+            raise ValueError('Unexpected global output type: %s' % self.output_spec.output_type)
+
+        if self.f_aav:        
+          model = keras.models.Model(inputs = [model_inputs, input_faav], outputs = output_layer)
+        else:
+          model = keras.models.Model(inputs = model_inputs, outputs = output_layer)
+        model.compile(loss = loss, 
+                      metrics=[r_square, 'mae'],
+                      optimizer =self.optimizer_class(learning_rate = self.lr, **self.other_optimizer_kwargs))
+        
+        self._init_weights(model)
+                
+        return model
+
+    
 class InputEncoder:
 
     def __init__(self, n_annotations):
@@ -191,3 +268,8 @@ def _slice_arrays(arrays, slicing):
         return [array[slicing] for array in arrays]
     else:
         return arrays[slicing]
+
+def r_square(y_true, y_pred):
+    SS_res =  K.sum(K.square(y_true - y_pred)) 
+    SS_tot = K.sum(K.square(y_true - K.mean(y_true))) 
+    return ( 1 - SS_res/(SS_tot + K.epsilon()) )
