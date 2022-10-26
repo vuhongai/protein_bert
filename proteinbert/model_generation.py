@@ -146,8 +146,9 @@ class FinetuningModelGenerator(ModelGenerator):
 
 class FinetuningModelGenerator_faav(ModelGenerator):
 
-    def __init__(self, pretraining_model_generator, output_spec, pretraining_model_manipulation_function = None, dropout_rate = 0.5, optimizer_class = None, \
-            lr = None, other_optimizer_kwargs = None, model_weights = None, optimizer_weights = None, f_aav=True):
+    def __init__(self, pretraining_model_generator, output_spec, \
+        pretraining_model_manipulation_function = None, dropout_rate = 0.5, optimizer_class = None, \
+        lr = None, other_optimizer_kwargs = None, model_weights = None, optimizer_weights = None, f_aav=True):
         
         if other_optimizer_kwargs is None:
             if optimizer_class is None:
